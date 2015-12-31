@@ -1,11 +1,10 @@
 import argparse
-import os
 import logging
-import logging.config
+import textwrap
+import time
 
 
-def here():
-    return os.path.dirname(os.path.abspath(__file__))
+logger = logging.getLogger(__name__)
 
 
 def parse_opts():
@@ -21,48 +20,93 @@ def parse_opts():
     parser.add_argument('dest_root', metavar='destination',
                         type=str,
                         help='Directory where the back-up will be located')
-    parser.add_argument('-f', '--force-dest', dest='force_dest',
-                        action='store_true', default=False,
-                        help=('Force the destination folder. '
-                              'May overwrite and remove files and folders.'))
-    parser.add_argument('-g', '--configure-logging', metavar='log_config',
-                        type=str, dest='log_config',
-                        default=os.path.join(here(), 'logging.conf'),
-                        help=('Path to an ini-file that configures logging. '
-                              'The default configuration prints the '
-                              'messages to the console and also appends '
-                              'to a file "backup.log" in current working '
-                              'directory.  See, e.g., https://docs.python.org/'
-                              '3.4/library/logging.config.html for information '
-                              'on the format of the file.'))
     opts = parser.parse_args()
 
-    opts.source_root = os.path.abspath(opts.source_root)
-    opts.dest_root = os.path.abspath(opts.dest_root)
-
     return opts
+
+
+COLORS = ['k', 'r', 'g', 'y', 'b', 'm', 'c', 'w']
+COLOR_DICT = dict(zip(COLORS, range(30, 30 + len(COLORS))))
+
+
+def _color_str(string, color):
+    """Simple color formatter for logging formatter"""
+    # For bold add 1; after "["
+    start_seq = '\033[{:d}m'.format(COLOR_DICT[color])
+
+    return start_seq + string + '\033[0m'
+
+
+class BupsFormatter(logging.Formatter):
+    def __init__(self, fmt=None, datefmt=None, style='%', width=70, indent=4,
+                 font_effects=True):
+        super().__init__(fmt=fmt, datefmt=datefmt, style=style)
+        self.font_effects = font_effects
+        self.wrapper = textwrap.TextWrapper(width=width,
+                                            subsequent_indent=' '*indent)
+
+    def format(self, record):
+
+        if self.font_effects:
+            if record.levelno >= 30:
+                record.msg = _color_str(record.msg, 'r')
+            elif hasattr(record, 'color'):
+                record.msg = _color_str(record.msg, record.color)
+
+        if hasattr(record, 'msg_only'):
+            return '\n  ' + record.msg + '\n'
+
+        if record.exc_info:
+            output = super().format(record)
+            output = textwrap.indent(output, ' '*3,
+                                     lambda x: not x.startswith('E: ')
+                                               and ' E: ' not in x)
+            return output + '\n'
+        else:
+            record.msg = textwrap.dedent(record.msg)
+            record.msg = record.msg.strip()
+            output = self.wrapper.fill(super().format(record))
+            if '\n' in output:
+                output += '\n'
+            return output
+
+
+def configure_logging():
+    fh = logging.FileHandler('backup.log')
+    ch = logging.StreamHandler()
+
+    minimal_formatter = BupsFormatter(fmt='%(levelname).1s: %(msg)s', indent=3)
+    simple_formatter = BupsFormatter(fmt='%(asctime)s %(levelname).1s: %(msg)s',
+                                     datefmt='%H:%M:%S', indent=12,
+                                     font_effects=False)
+
+    ch.setFormatter(minimal_formatter)
+    fh.setFormatter(simple_formatter)
+    logging.getLogger().addHandler(fh)
+    logging.getLogger().addHandler(ch)
+    logging.getLogger().setLevel(logging.INFO)
 
 
 def main():
     opts = parse_opts()
 
-    logging.config.fileConfig(opts.log_config)
-    
+    configure_logging()
+
     from .preparations import (InvalidFoldersException,
                                InvalidConfigException,
                                start_backup)
 
-    logger = logging.getLogger(__name__)
-    
     try:
-        start_backup(opts.source_root, opts.dest_root, opts.force_dest)
-        logger.info('Back-up complete!')
+        logger.info('Starting back-up at {}'.format(time.strftime('%c')),
+                    extra={'msg_only': 1, 'color': 'y'})
+        start_backup(opts.source_root, opts.dest_root)
+        logger.info('Back-up complete, congratulations! :)', extra={'msg_only': 1, 'color': 'y'})
     except InvalidFoldersException as exc:
-        logger.error('Unable to make a back-up.\n\n{}'.format(str(exc)))
+        logger.error('Unable to make a back-up. ' + str(exc))
     except InvalidConfigException as exc:
-        logger.error('Unable to read the configuration\n\n{}.'.format(str(exc)))
+        logger.error('Unable to read the configuration. ',exc_info=True)
     except KeyboardInterrupt:
         logger.info('Aborting execution, incomplete back-up')
     except Exception as exc:
-        logger.error('Unknown error occurred.\n\n', exc_info=True)
-        logger.error('Incomplete back-up.')
+        logger.error('Unknown error occurred. ', exc_info=True)
+        logger.error('Incomplete back-up')

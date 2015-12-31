@@ -9,19 +9,17 @@ from .. import backup_loop as bloop
 
 
 def populate_dirs(source_root, dest_root):
-    """Generate files and folders into two directories 
-
-    """
+    """Generate files and folders into two directories"""
     source_target = join(source_root, 'target')
     dir1 = join(source_target, 'dir1')
     dir2 = join(source_target, 'dir2')
     dir3 = join(source_target, 'dir3')
     dir_tricky = join(source_target, 'tricky directory@åäö')
-    
+
     dest_target = join(dest_root, 'target')
     dir1_dest = join(dest_target,'dir1')
     dir4_dest = join(dest_target, 'dir4')
-    
+
     os.makedirs(dir1)
     os.makedirs(dir2)
     os.makedirs(dir3)
@@ -55,9 +53,9 @@ def populate_dirs(source_root, dest_root):
     os.utime(join(dest_target, 'file3'), (mtime+1e-5, mtime+1e-5))
     assert os.stat(join(dest_target, 'file3')).st_mtime > mtime
 
-    source_items = [join('target', i) for i in os.listdir(source_target)] 
+    source_items = [join('target', i) for i in os.listdir(source_target)]
     dest_items = [join('target', i) for i in os.listdir(dest_target)]
-    
+
     return source_items, dest_items
 
 
@@ -65,24 +63,26 @@ def populate_dirs(source_root, dest_root):
     param(populate_dirs),
 ])
 def test_match_directories(populate_fun):
-
+    """A bit heavy test to check some copying and removing"""
     new_targets = []
     archived = []
 
-    def backup_call(source_root, dest_root, rel_path, config):
-        new_targets.append(rel_path)
+    def backup_call(node):
+        new_targets.append(node.item)
 
-    def archive_call(root_path, rel_path):
-        archived.append(join(root_path, rel_path))
+    def archive_call(node):
+        archived.append(node.dest_item)
 
     with tempfile.TemporaryDirectory() as source_root, \
             tempfile.TemporaryDirectory() as dest_root:
         source_items, dest_items =  populate_fun(source_root, dest_root)
         rel_path = 'target'
         with patch.object(bloop, 'make_backup', side_effect=backup_call), \
-                patch.object(bloop, 'archive_item', side_effect=archive_call), \
+                patch.object(bloop.BackupNode, 'remove',
+                             side_effect=archive_call, autospec=True), \
                 patch.object(bloop, 'check_include', return_value=True):
-            bloop.match_directories(source_root, dest_root, rel_path, None)
+            start_node = bloop.BackupNode(source_root, dest_root, rel_path, None)
+            bloop.match_directories(start_node)
 
         for item in source_items:
             ok_(item in new_targets)
@@ -90,7 +90,7 @@ def test_match_directories(populate_fun):
         for item in dest_items:
             if item not in source_items:
                 ok_(join(dest_root, item) in archived)
-        
+
 
 class MakeBackupTestCase(unittest.TestCase):
 
@@ -102,39 +102,44 @@ class MakeBackupTestCase(unittest.TestCase):
         populate_dirs(self.source_root, self.dest_root)
 
     def test_copy_new_directory(self):
+        """Copy a directory that doesn't exist in back-up"""
         with patch.object(bloop, 'match_directories') as md:
             rel_path = join('target', 'dir2')
             target_folder = join(self.dest_root, rel_path)
             ok_(not exists(target_folder))
-            bloop.make_backup(self.source_root, self.dest_root, rel_path, None)
-            md.assert_called_once_with(self.source_root, self.dest_root,
-                                       rel_path, None)
+            node = bloop.BackupNode(self.source_root, self.dest_root, rel_path, None)
+            bloop.make_backup(node)
+            md.assert_called_once_with(node)
             ok_(exists(target_folder))
             ok_(isdir(target_folder))
             eq_(len(os.listdir(target_folder)), 0)
 
     def test_replace_file_with_directory(self):
+        """A file in back-up has changed to directory"""
         with patch.object(bloop, 'match_directories') as md:
             rel_path = join('target', 'dir3')
             target_folder = join(self.dest_root, rel_path)
             ok_(exists(target_folder))
             ok_(isfile(target_folder))
-            bloop.make_backup(self.source_root, self.dest_root, rel_path, None)
-            md.assert_called_once_with(self.source_root, self.dest_root,
-                                       rel_path, None)
+            node = bloop.BackupNode(self.source_root, self.dest_root, rel_path, None)
+            bloop.make_backup(node)
+            md.assert_called_once_with(node)
             ok_(exists(target_folder))
             ok_(isdir(target_folder))
             eq_(len(os.listdir(target_folder)), 0)
 
     def test_copy_a_new_file(self):
+        """Copy a file that doesn't exist in back-up"""
         rel_path = join('target', 'file1')
         target_file = join(self.dest_root, rel_path)
         ok_(not exists(target_file))
-        bloop.make_backup(self.source_root, self.dest_root, rel_path, None)
+        node = bloop.BackupNode(self.source_root, self.dest_root, rel_path, None)
+        bloop.make_backup(node)
         ok_(exists(target_file))
         ok_(isfile(target_file))
 
     def test_replace_an_older_file(self):
+        """Copy a file that is newer in source"""
         rel_path = join('target', 'file2')
         target_file = join(self.dest_root, rel_path)
         source_file = join(self.source_root, rel_path)
@@ -142,35 +147,41 @@ class MakeBackupTestCase(unittest.TestCase):
         old_mtime = os.stat(target_file).st_mtime
         new_mtime = os.stat(source_file).st_mtime
         ok_(old_mtime < new_mtime, (old_mtime, new_mtime))
-        bloop.make_backup(self.source_root, self.dest_root, rel_path, None)
+        node = bloop.BackupNode(self.source_root, self.dest_root, rel_path, None)
+        bloop.make_backup(node)
         ok_(exists(target_file))
         ok_(isfile(target_file))
         ok_(os.stat(target_file).st_mtime >= new_mtime)
 
     def test_replace_a_folder_with_file(self):
+        """A folder in back-up has changed into file"""
         rel_path = join('target', 'dir4')
         target_file = join(self.dest_root, rel_path)
         ok_(isdir(target_file))
-        bloop.make_backup(self.source_root, self.dest_root, rel_path, None)
+        node = bloop.BackupNode(self.source_root, self.dest_root, rel_path, None)
+        bloop.make_backup(node)
         ok_(exists(target_file))
         ok_(isfile(target_file))
 
     def test_file_with_tricky_characters(self):
+        """Copy a file that has non-ascii characters in the name"""
         rel_path = join('target', 'tricky file@åäö.')
         target_file = join(self.dest_root, rel_path)
         ok_(not exists(target_file))
-        bloop.make_backup(self.source_root, self.dest_root, rel_path, None)
+        node = bloop.BackupNode(self.source_root, self.dest_root, rel_path, None)
+        bloop.make_backup(node)
         ok_(exists(target_file))
         ok_(isfile(target_file))
 
     def test_a_folder_with_tricky_characters(self):
+        """Copy a folder that has non-ascii characters in the name"""
         with patch.object(bloop, 'match_directories') as md:
             rel_path = join('target', 'tricky directory@åäö')
             target_folder = join(self.dest_root, rel_path)
             ok_(not exists(target_folder))
-            bloop.make_backup(self.source_root, self.dest_root, rel_path, None)
-            md.assert_called_once_with(self.source_root, self.dest_root,
-                                       rel_path, None)
+            node = bloop.BackupNode(self.source_root, self.dest_root, rel_path, None)
+            bloop.make_backup(node)
+            md.assert_called_once_with(node)
             ok_(exists(target_folder))
             ok_(isdir(target_folder))
             eq_(len(os.listdir(target_folder)), 0)
@@ -178,4 +189,3 @@ class MakeBackupTestCase(unittest.TestCase):
     def wrapDown(self):
         self.source_tempdir.cleanup()
         self.dest_tempdir.cleanup()
-

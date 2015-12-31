@@ -6,6 +6,14 @@ setup(name='bups',
       author='Jarno Saarimäki',
       author_email='j.saarimaki@gmail.com',
       packages=['bups'],
-      package_data = {'bups': ['*.conf']},
+      test_suite='nose.collector',
+      install_requires=[
+          'pyyaml>=3.11'
+      ],
+      tests_require=[
+          'nose>=1.3.7',
+          'mock>=1.3.0',
+          'nose-parameterized>=0.3.5'
+          ],
       entry_points = {'console_scripts': ['bups = bups.main:main']}
       )
